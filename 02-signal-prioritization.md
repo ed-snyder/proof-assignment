@@ -10,6 +10,331 @@ Together these cover the full intent spectrum: 6Sense captures accounts that are
 
 ---
 
+## Motion Flowcharts
+
+### Motion 1: 6Sense Intent Surge → Personalized Outreach
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  TRIGGER: Daily 6am schedule (n8n)                              ║
+╚══════════════════════╤═══════════════════════════════════════════╝
+                       ▼
+            ┌─────────────────────┐
+            │  Pull 6Sense Surge  │
+            │  Accounts via API   │
+            │                     │
+            │  GET /v3/company/   │
+            │  details            │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐     ┌─────────────────┐
+            │  Filter: Buying     │     │                 │
+            │  Stage = Decision   │────▶│  DISCARD        │
+            │  or Purchase?       │ NO  │  (not ready)    │
+            │  Intent Score > 60? │     │                 │
+            └──────────┬──────────┘     └─────────────────┘
+                       │ YES
+                       ▼
+            ┌─────────────────────┐
+            │  Resolve to         │
+            │  Contacts           │
+            │                     │
+            │  POST /v2/search/   │
+            │  people             │
+            │  (by domain + role  │
+            │   + seniority)      │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐     ┌─────────────────┐
+            │  Check: Already in  │     │                 │
+            │  active sequence?   │────▶│  SKIP           │
+            │  Already a customer?│ YES │                 │
+            └──────────┬──────────┘     └─────────────────┘
+                       │ NO
+                       ▼
+            ┌─────────────────────┐
+            │  Enrich via Clay    │
+            │                     │
+            │  POST /v1/people/   │
+            │  enrich             │
+            │  (LinkedIn, news,   │
+            │   tech stack, etc.) │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐     ┌─────────────────┐
+            │  Enrichment         │     │  GTME HOLDING   │
+            │  complete enough?   │────▶│  QUEUE          │
+            │  (title, industry,  │ NO  │  (manual review)│
+            │   company filled?)  │     │                 │
+            └──────────┬──────────┘     └─────────────────┘
+                       │ YES
+                       ▼
+            ┌─────────────────────┐
+            │  Tag: signal_source │
+            │  = "intent_surge"   │
+            │  signal_strength    │
+            │  = intent_score     │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  Write to           │
+            │  Salesforce         │
+            │                     │
+            │  Account: intent    │
+            │  score, buying      │
+            │  stage, segments    │
+            │  Contact: title,    │
+            │  signal source      │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  ┌───────────────┐  │
+            │  │ AI: Research  │  │
+            │  │ Synthesis     │  │  ◀── governed by prompt.md
+            │  │ (Claude API)  │  │
+            │  │               │  │
+            │  │ • Transform   │  │
+            │  │   metadata    │  │
+            │  │ • Generate    │  │
+            │  │   hypothesis  │  │
+            │  └───────┬───────┘  │
+            │          ▼          │
+            │  ┌───────────────┐  │
+            │  │ AI: Email     │  │
+            │  │ Generation    │  │  ◀── intent surge template
+            │  │ (Claude API)  │  │
+            │  │               │  │
+            │  │ < 250 words   │  │
+            │  └───────┬───────┘  │
+            │          ▼          │
+            │  ┌───────────────┐  │
+            │  │ AI: Quality   │  │
+            │  │ Gate          │  │
+            │  │ (Claude API)  │  │
+            │  │               │  │
+            │  │ PASS / SOFT   │  │
+            │  │ FAIL / HARD   │  │
+            │  │ FAIL          │  │
+            │  └───────┬───────┘  │
+            │    PASS  │          │
+            └──────────┼──────────┘
+                       │          ├── SOFT FAIL → retry (max 2x)
+                       │          └── HARD FAIL → Slack alert to GTME
+                       ▼
+            ┌─────────────────────┐
+            │  Upsert in Outreach │
+            │  + Add to Intent    │
+            │  Surge Sequence     │
+            │                     │
+            │  POST /v2/prospects │
+            │  POST /v2/          │
+            │  sequenceStates     │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  EMAIL SENT         │
+            │                     │
+            │  ┌───────────────┐  │
+            │  │Reply? ────────┼──┼──▶ Positive → AE (Slack + SF)
+            │  │               │  │    Negative → Objection log
+            │  │No reply? ─────┼──┼──▶ Continue sequence
+            │  └───────────────┘  │
+            └─────────────────────┘
+```
+
+### Motion 2: Product / PLG Signals → Personalized Outreach
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  TRIGGER: Daily 6am schedule (n8n)                              ║
+╚══════════════════════╤═══════════════════════════════════════════╝
+                       ▼
+            ┌─────────────────────┐
+            │  Query Redshift     │
+            │  (product DB)       │
+            └──────────┬──────────┘
+                       ▼
+       ┌───────────────┼───────────────┬───────────────┐
+       ▼               ▼               ▼               ▼
+  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
+  │ NEW      │    │ FEATURE │    │ USAGE   │    │ DROP-   │
+  │ SIGNUP   │    │ ACTIV.  │    │ SPIKE   │    │ OFF     │
+  │          │    │         │    │         │    │         │
+  │ Trial    │    │ First   │    │ Volume  │    │ Signed  │
+  │ started  │    │ notari- │    │ 2x+     │    │ up but  │
+  │ in last  │    │ zation  │    │ week-   │    │ no      │
+  │ 24hrs    │    │ complet-│    │ over-   │    │ activity│
+  │          │    │ ed      │    │ week    │    │ in 7d   │
+  │          │    │         │    │         │    │         │
+  │ Score:60 │    │ Score:75│    │ Score:80│    │ Score:50│
+  └────┬─────┘    └────┬────┘    └────┬────┘    └────┬────┘
+       └───────────────┼───────────────┴───────────────┘
+                       ▼
+            ┌─────────────────────┐     ┌─────────────────┐
+            │  Salesforce Check:  │     │                 │
+            │  • Existing         │────▶│  SKIP           │
+            │    customer?        │ YES │                 │
+            │  • In active        │     │                 │
+            │    sequence?        │     │                 │
+            │  • Do not contact?  │     │                 │
+            └──────────┬──────────┘     └─────────────────┘
+                       │ NO
+                       ▼
+            ┌─────────────────────┐
+            │  Enrich via Clay    │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  Tag signal_source  │
+            │  + signal_strength  │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  Write to Salesforce│
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  AI Pipeline        │
+            │  (same as Motion 1) │
+            │                     │
+            │  Research Synthesis  │
+            │  → Email Generation │  ◀── template selected by signal_source
+            │  → Quality Gate     │
+            └──────────┬──────────┘
+                       ▼
+       ┌───────────────┼───────────────┬───────────────┐
+       ▼               ▼               ▼               ▼
+  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
+  │ SIGNUP   │    │ ACTIV.  │    │ SPIKE   │    │ DROP-OFF│
+  │ SEQUENCE │    │ SEQUENCE│    │ SEQUENCE│    │ SEQUENCE│
+  │          │    │         │    │         │    │         │
+  │ Helpful, │    │ "Here's │    │ "Your   │    │ "Need   │
+  │ not      │    │ what    │    │ volume  │    │ help    │
+  │ salesy.  │    │ teams   │    │ is      │    │ getting │
+  │ Welcome  │    │ do next"│    │ growing"│    │ started?│
+  │ + value  │    │ expand  │    │ scale + │    │ remove  │
+  │          │    │ to team │    │ enterp. │    │ friction│
+  └──────────┘    └─────────┘    └─────────┘    └─────────┘
+       │               │               │               │
+       └───────────────┼───────────────┴───────────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  Outreach tracks    │
+            │  engagement         │
+            │                     │
+            │  Reply → AE handoff │
+            │  No reply → next    │
+            │  sequence step      │
+            └─────────────────────┘
+```
+
+### Motion 3: Gong Closed-Lost Analysis → Feedback Loop
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║  TRIGGER: Monthly (Python script, manual or cron)               ║
+╚══════════════════════╤═══════════════════════════════════════════╝
+                       ▼
+            ┌─────────────────────┐
+            │  1. Query Salesforce│
+            │     SOQL: all       │
+            │     Closed Lost     │
+            │     opps, last 12mo │
+            │                     │
+            │  Returns: opp IDs,  │
+            │  account, industry, │
+            │  size, loss reason, │
+            │  competitor         │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  2. Pull Gong calls │
+            │     POST /v2/calls/ │
+            │     extensive       │
+            │                     │
+            │  Returns: calls     │
+            │  with CRM context   │
+            │  (opp IDs linked)   │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  3. Match calls to  │
+            │     closed-lost     │
+            │     opp IDs         │
+            │     (client-side    │
+            │      join — Gong    │
+            │      has no deal-   │
+            │      stage filter)  │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  4. Pull transcripts│
+            │     POST /v2/calls/ │
+            │     transcript      │
+            │                     │
+            │  Returns: speaker   │
+            │  monologues with    │
+            │  timestamped        │
+            │  sentences          │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  5. Claude analyzes │
+            │     transcripts     │
+            │     in batches of 5 │
+            │                     │
+            │  Extracts:          │
+            │  • Objections       │
+            │  • Pain points      │
+            │  • Competitors      │
+            │  • Segment signals  │
+            │  • Messaging gaps   │
+            └──────────┬──────────┘
+                       ▼
+            ┌─────────────────────┐
+            │  6. Claude          │
+            │     synthesizes     │
+            │     all batches     │
+            │     into single     │
+            │     intelligence    │
+            │     brief           │
+            └──────────┬──────────┘
+                       ▼
+           ┌───────────────────────┐
+           │  OUTPUT:              │
+           │  closed_lost_         │
+           │  intelligence.json    │
+           └───────────┬───────────┘
+                       ▼
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+  ┌───────────┐  ┌───────────┐  ┌───────────┐
+  │ UPDATE    │  │ UPDATE    │  │ UPDATE    │
+  │ n8n       │  │ prompt.md │  │ Outreach  │
+  │ SUPPRESS- │  │           │  │ TEMPLATES │
+  │ ION RULES │  │ Add       │  │           │
+  │           │  │ objection │  │ Address   │
+  │ Add IF    │  │ preemption│  │ messaging │
+  │ node      │  │ rules,    │  │ gaps in   │
+  │ filters   │  │ refine    │  │ first-    │
+  │ for bad   │  │ hypothesis│  │ touch     │
+  │ segments  │  │ framework │  │ copy      │
+  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘
+        │              │              │
+        └──────────────┼──────────────┘
+                       ▼
+  ┌────────────────────────────────────────────┐
+  │  MOTIONS 1 & 2 GET SMARTER                 │
+  │                                            │
+  │  • Better targeting (fewer wasted emails)  │
+  │  • Better messaging (objections preempted) │
+  │  • Better templates (gaps addressed)       │
+  │  • System improves every month             │
+  └────────────────────────────────────────────┘
+```
+
+---
+
 ## Signal 1: 6Sense Intent Surges — Integration Walkthrough
 
 ### The Core Problem
